@@ -66,13 +66,27 @@ async def scan_channels(client, state: State, *, messages_per_channel=100, max_c
                 state.add_message(channel,message)
                 caption = message.get("text") or ""
                 attachment = message.get("attachment")
+                handled_public_url = None
                 if attachment:
                     filename = attachment.get("file_name") or "unnamed"
                     eligible,reason = classify_freebie(caption,filename)
                     if is_supported_filename(filename) and (eligible or "Music asset" in reason):
-                        state.add_asset(kind="telegram",channel=channel,message_id=message["message_id"],filename=filename,text=caption,eligible=eligible,reason=reason)
+                        public_url = attachment.get("download_url")
+                        try:
+                            parsed_public = urlsplit(public_url) if isinstance(public_url,str) else None
+                            valid_public = parsed_public is not None and parsed_public.scheme == "https" and parsed_public.hostname and parsed_public.username is None and parsed_public.password is None
+                        except ValueError:
+                            valid_public = False
+                        if valid_public:
+                            state.add_asset(kind="http",channel=channel,message_id=message["message_id"],filename=filename,text=caption,eligible=eligible,reason=reason,url=public_url)
+                            handled_public_url = public_url
+                        else:
+                            if getattr(client,"supports_attachment_download",True) is False:
+                                eligible = False
+                                reason = "Public preview does not expose a file URL; open the post in Telegram or use optional account mode"
+                            state.add_asset(kind="telegram",channel=channel,message_id=message["message_id"],filename=filename,text=caption,eligible=eligible,reason=reason)
                 for url in list(dict.fromkeys((message.get("links") or []) + extract_urls(caption))):
-                    if not isinstance(url,str):
+                    if not isinstance(url,str) or url == handled_public_url:
                         continue
                     try:
                         parsed = urlsplit(url)
@@ -80,11 +94,14 @@ async def scan_channels(client, state: State, *, messages_per_channel=100, max_c
                     except (ValueError,TypeError):
                         continue
                     eligible,reason = classify_freebie(caption,filename)
-                    if parsed.scheme == "https" and (eligible or "Music asset" in reason):
+                    if parsed.scheme == "https" and parsed.hostname and parsed.username is None and parsed.password is None and (eligible or "Music asset" in reason):
                         # Landing pages stay in the queue, alongside directly downloadable files.
                         if not is_supported_filename(filename):
                             eligible,reason = False,"Music offer landing page; open it to obtain a direct download URL"
                         state.add_asset(kind="http",channel=channel,message_id=message["message_id"],filename=filename or "landing-page",text=caption,eligible=eligible,reason=reason,url=url)
+                if message.get("unsupported_media") and classify_freebie(caption)[0]:
+                    state.add_asset(kind="http",channel=channel,message_id=message["message_id"],filename="Telegram post",text=caption,eligible=False,
+                        reason="Free music offer; the public preview does not expose its media file URL",url=f"https://t.me/{channel}/{message['message_id']}")
             with state.db:
                 state.db.execute("UPDATE channels SET scanned=1,error=NULL,skip_reason=NULL WHERE username=?",(channel,))
             log(f"Scanned @{channel}")
@@ -108,7 +125,8 @@ async def download_assets(state: State, directory: Path, *, telegram=None, max_f
     directory.mkdir(parents=True,exist_ok=True)
     statuses = ("queued","error") if retry_errors else ("queued",)
     placeholders = ",".join("?" for _ in statuses)
-    assets = state.db.execute(f"SELECT * FROM assets WHERE eligible=1 AND status IN ({placeholders}) ORDER BY rowid LIMIT ?",(*statuses,max_files)).fetchall()
+    available_kind = " AND kind='http'" if telegram is None or getattr(telegram,"supports_attachment_download",True) is False else ""
+    assets = state.db.execute(f"SELECT * FROM assets WHERE eligible=1 AND status IN ({placeholders}){available_kind} ORDER BY rowid LIMIT ?",(*statuses,max_files)).fetchall()
     total = 0
     for row in assets:
         remaining = max_total_bytes-total
@@ -116,10 +134,14 @@ async def download_assets(state: State, directory: Path, *, telegram=None, max_f
             break
         try:
             if row["kind"] == "http":
-                result = download_url(row["url"],directory,max_bytes=min(max_file_bytes,remaining))
+                options = {"max_bytes":min(max_file_bytes,remaining)}
+                url_name = unquote(urlsplit(row["url"]).path.rsplit("/",1)[-1])
+                if not is_supported_filename(url_name) and is_supported_filename(row["filename"]):
+                    options["filename_hint"] = row["filename"]
+                result = download_url(row["url"],directory,**options)
             else:
-                if telegram is None:
-                    log(f"{row['id']}: Telegram login needed; leaving queued")
+                if telegram is None or getattr(telegram,"supports_attachment_download",True) is False:
+                    log(f"{row['id']}: no public file URL; leaving Telegram attachment queued")
                     continue
                 name = re.sub(r"[^A-Za-z0-9._-]","_",Path(row["filename"]).name)[:160]
                 if not is_supported_filename(name):

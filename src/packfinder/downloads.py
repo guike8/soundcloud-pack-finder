@@ -146,7 +146,7 @@ def _open_response(parts, addresses: tuple[str, ...], timeout: int):
     raise DownloadError("Could not establish a verified HTTPS download connection.") from last_error
 
 
-def _safe_filename(response, parts) -> str:
+def _safe_filename(response, parts, filename_hint: str | None = None) -> str:
     header = response.getheader("Content-Disposition")
     filename = None
     if header:
@@ -155,6 +155,8 @@ def _safe_filename(response, parts) -> str:
         filename = message.get_filename()
     if not filename:
         filename = unquote(parts.path.rsplit("/", 1)[-1])
+        if not header and Path(filename).suffix.lower() not in ALLOWED_SUFFIXES and filename_hint:
+            filename = filename_hint
     filename = unicodedata.normalize("NFKC", str(filename))
     filename = filename.replace("\\", "/").rsplit("/", 1)[-1]
     filename = "".join(char for char in filename if not unicodedata.category(char).startswith("C"))
@@ -281,17 +283,28 @@ def download_url(
     destination_dir: Path,
     max_bytes: int = DEFAULT_MAX_BYTES,
     sha256_expected: str | None = None,
+    *,
+    filename_hint: str | None = None,
 ) -> dict:
     """Download a public HTTPS artifact and return its path and SHA-256 metadata.
 
     Redirects, file size, filename, and recognizable formats are checked. Files,
     including installers, remain unopened with non-executable file permissions.
+    A bare ``filename_hint`` may name an exposed artifact behind a generic URL,
+    only when no Content-Disposition or supported URL filename is available.
     This is format validation, not a malware scanner or a license determination.
     """
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
         raise DownloadError("max_bytes must be a positive integer.")
     if sha256_expected is not None and (not isinstance(sha256_expected, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256_expected)):
         raise DownloadError("The expected SHA-256 must contain 64 hexadecimal characters.")
+    if filename_hint is not None and (
+        not is_supported_filename(filename_hint)
+        or re.search(r"[^\w .()+-]", filename_hint)
+        or filename_hint != filename_hint.strip(" .")
+        or len(filename_hint.encode("utf-8")) > 180
+    ):
+        raise DownloadError("The filename hint must be a bare, supported artifact filename.")
     initial = _parse_url(url)
     current = initial
     response = None
@@ -327,7 +340,7 @@ def download_url(
                 raise DownloadError("The server returned an invalid Content-Length.") from exc
             if expected_length < 0 or expected_length > max_bytes:
                 raise DownloadError("The file exceeds the configured download size limit.")
-        filename = _safe_filename(response, current)
+        filename = _safe_filename(response, current, filename_hint=filename_hint)
         content_type = (response.getheader("Content-Type") or "application/octet-stream").split(";", 1)[0].strip().lower()
         first = response.read(min(1024, max_bytes + 1))
         if len(first) > max_bytes:

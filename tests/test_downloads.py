@@ -174,6 +174,45 @@ class DownloadTests(unittest.TestCase):
         path.write_bytes(b"x" * 2048 + b"koly" + b"\x00" * 508)
         self.assertTrue(downloads.validate_download_file(path)["installer"])
 
+    def test_filename_hint_names_a_public_artifact_behind_generic_url(self):
+        with patch.object(downloads, "_open_response", return_value=(FakeResponse(ZIP_BYTES), FakeConnection())):
+            result = downloads.download_url("https://files.example/file?token=public", self.destination, filename_hint="free sample pack.zip")
+        self.assertEqual(result["filename"], "free sample pack.zip")
+        self.assertEqual(Path(result["path"]).read_bytes(), ZIP_BYTES)
+
+    def test_filename_hint_cannot_override_server_or_supported_url_filename(self):
+        response = FakeResponse(ZIP_BYTES, headers={"Content-Disposition": 'attachment; filename="server-pack.zip"'})
+        with patch.object(downloads, "_open_response", return_value=(response, FakeConnection())):
+            result = downloads.download_url("https://files.example/file", self.destination, filename_hint="hint-pack.zip")
+        self.assertEqual(result["filename"], "server-pack.zip")
+        with patch.object(downloads, "_open_response", return_value=(FakeResponse(ZIP_BYTES), FakeConnection())):
+            result = downloads.download_url("https://files.example/url-pack.zip", self.destination, filename_hint="hint-pack.zip")
+        self.assertEqual(result["filename"], "url-pack.zip")
+
+    def test_filename_hint_cannot_replace_unsupported_content_disposition(self):
+        for header in ('attachment; filename="page.html"', 'attachment'):
+            with self.subTest(header=header), patch.object(downloads, "_open_response", return_value=(FakeResponse(ZIP_BYTES, headers={"Content-Disposition": header}), FakeConnection())):
+                with self.assertRaises(downloads.DownloadError):
+                    downloads.download_url("https://files.example/file", self.destination, filename_hint="hint-pack.zip")
+        self.assertEqual(list(self.destination.iterdir()), [])
+
+    def test_filename_hint_rejects_paths_scripts_and_unsafe_names_before_network(self):
+        for hint in ("../pack.zip", "..\\pack.zip", "install.sh", "pack\x00.zip", " pack.zip", "pack?.zip", 123):
+            with self.subTest(hint=hint), patch.object(downloads, "_open_response") as network:
+                with self.assertRaises(downloads.DownloadError):
+                    downloads.download_url("https://files.example/file", self.destination, filename_hint=hint)
+                network.assert_not_called()
+
+    def test_filename_hint_cannot_bypass_blocked_url_or_content_validation(self):
+        with patch.object(downloads, "_open_response") as network:
+            with self.assertRaises(downloads.DownloadError):
+                downloads.download_url("https://files.example/install.sh", self.destination, filename_hint="pack.zip")
+            network.assert_not_called()
+        with patch.object(downloads, "_open_response", return_value=(FakeResponse(b"MZ" + b"x" * 100), FakeConnection())):
+            with self.assertRaisesRegex(downloads.DownloadError, "misleading"):
+                downloads.download_url("https://files.example/file", self.destination, filename_hint="pack.zip")
+        self.assertEqual(list(self.destination.iterdir()), [])
+
 
 class AddressValidationTests(unittest.TestCase):
     def test_rejects_local_reserved_and_metadata_addresses(self):

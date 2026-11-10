@@ -2,7 +2,7 @@
 
 Start at a SoundCloud profile, traverse followers and their followers, collect public Telegram links from bios and profile links, then find and download music-production freebies.
 
-**SoundCloud works anonymously. No registered app, API token, account cookies, or login is required.** It reads the public site's hydration data and uses the same anonymous website requests with a dynamically discovered public client identifier. Telegram scanning uses your own locally authenticated Telegram session.
+**The default pipeline works anonymously, with no registered apps, API keys, account cookies, or login.** SoundCloud uses the public website's current client configuration. Telegram uses public `t.me/s/` channel pages and downloads openly exposed files and external links. A local Telegram account session is an optional mode for attachments whose bytes aren't exposed on public pages.
 
 ## Install
 
@@ -11,7 +11,7 @@ Python 3.11 or newer:
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[telegram]'
+python -m pip install -e .
 packfinder doctor
 ```
 
@@ -30,28 +30,12 @@ Open `reports/latest/index.html`. JSON and CSV exports are beside it. `--depth 0
 
 Progress, graph edges, sources, channel status, and file hashes live in `data/crawl.sqlite3`. Repeating the command resumes it. You can increase the depth, profile limit, or per-profile follower limit to widen a crawl. Use `--retry-errors` to retry failed profiles. Use a different `--db data/another.sqlite3` for a different starting profile.
 
-## Connect Telegram once
+## Scan public Telegram pages — no login
 
-Obtain your own `api_id` and `api_hash` from [Telegram API development tools](https://my.telegram.org/apps). Then use the local interactive setup:
-
-```sh
-packfinder telegram-setup
-```
-
-On macOS, double-click `connect-telegram.command` in Finder. It prompts locally for the app credentials, phone number, login code, and two-step password if enabled. Secret inputs are hidden. App credentials are saved in `data/telegram.credentials.json` with owner-only permissions, and future commands load them automatically. Login codes and passwords are never saved. Keep the local credentials and session out of public issues and chat messages.
-
-Environment variables are also supported if you prefer managing credentials yourself:
+The default `--telegram-mode web` reads [public channel previews](https://telegram.org/tour/channels). It paginates the available posts, extracts captions and links, and checks for music freebies. It does not ask for an API ID, API hash, phone number, or login code. Links with no public post history are recorded as skipped.
 
 ```sh
-export TELEGRAM_API_ID='your_numeric_id'
-export TELEGRAM_API_HASH='your_api_hash'
-packfinder telegram-login
-```
-
-Login asks for your phone number, Telegram login code, and two-step password if enabled. Credentials are not sent to SoundCloud. The local Telegram session is stored under `data/` and excluded from Git. No channels are joined and no messages are sent. Public broadcast-channel histories are read; personal accounts, private invites, and protected files are skipped.
-
-```sh
-packfinder scan-telegram --messages 100 --max-channels 50
+packfinder scan-telegram --messages 1000 --max-channels 50
 packfinder queue
 packfinder download --max-files 20 --max-file-mb 512 --max-total-mb 1024
 packfinder report
@@ -72,9 +56,24 @@ packfinder approve ASSET_ID --reason 'Creator offers this pack free under the in
 packfinder download
 ```
 
-Only direct HTTPS downloads and Telegram attachments are fetched. Vendor landing pages, shortened links, Google Drive/MEGA pages, and shopping/checkout flows remain links in the report; the tool does not pretend those pages are download files. Archives, audio, preset files, and conventional VST installers can be saved. Nothing is opened, installed, run, or extracted. Files get size limits, format checks, SHA-256 hashes, and non-executable permissions. HTTP redirects and destinations are checked, and existing files are never overwritten.
+Public mode fetches direct HTTPS files, including an attachment URL if its bytes are actually exposed. A Telegram document card often links back to its post instead of a downloadable file; those attachments stay in the queue with a clear reason and source post link. No API setup is triggered automatically. Vendor landing pages, shortened links, Google Drive/MEGA pages, and shopping/checkout flows remain links in the report. Archives, audio, preset files, and conventional VST installers can be saved. Nothing is opened, installed, run, or extracted. Files get size limits, format checks, SHA-256 hashes, and non-executable permissions. HTTP redirects and destinations are checked, and existing files are never overwritten.
 
-Re-scan recent channel posts with `scan-telegram --refresh-channels`. Repeated messages and downloads are deduplicated. Telegram history reads are limited to the most recent `--messages` posts, not the channel's entire history. Refresh can miss older posts outside that window.
+Re-scan recent channel posts with `scan-telegram --refresh-channels`. Repeated messages and downloads are deduplicated. Reads are limited to `--messages` and the public history the website exposes. Refresh can miss older posts outside that window. This unofficial HTML interface can change independently of the tool.
+
+## Optional: Telegram account mode
+
+If an attachment has no public file URL, its source post can still be opened in the normal Telegram app or web client and downloaded there, without registering an API application. For automated headless access, you can explicitly opt into a locally authenticated user session:
+
+```sh
+python -m pip install -e '.[telegram]'
+packfinder telegram-setup
+packfinder scan-telegram --telegram-mode account --refresh-channels --messages 1000
+packfinder download --telegram-mode account
+```
+
+This optional setup needs your own `api_id` and `api_hash` from [Telegram API development tools](https://my.telegram.org/apps). The interactive helper prompts locally for those credentials and the phone/code/2FA login. On macOS, `connect-telegram.command` runs this setup. Secret inputs are hidden. App credentials are stored in `data/telegram.credentials.json` with owner-only permissions, and future account-mode commands load them automatically. Codes and passwords are never saved. The session stays under `data/` and is excluded from Git.
+
+You can instead supply `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` in your environment and run `packfinder telegram-login`. No channels are joined and no messages are sent. Personal accounts, private invites, and protected files are skipped. `--telegram-mode account` must be selected explicitly; normal scans/downloads stay anonymous.
 
 ## Verify
 
@@ -84,7 +83,7 @@ packfinder demo
 packfinder doctor --live
 ```
 
-The demo uses fictional profiles and messages, performs no network requests, and never downloads anything. `doctor --live` resolves the configured real SoundCloud seed and reads one follower. Telegram integration tests use injected clients and do not log into your account. A complete live Telegram run requires your local credentials and login.
+The demo uses fictional profiles and messages, performs no network requests, and never downloads anything. `doctor --live` resolves the configured real SoundCloud seed and reads one follower. Telegram integration tests use injected clients or HTML fixtures and never log into your account. Public Telegram scans can run live without any credentials.
 
 The public-site SoundCloud adapter is based on observed website behavior and may need updating when the site changes. A rate limit or access denial stops that request with a saved error; the tool does not rotate proxies or bypass challenges. See [the implementation notes](REVERSE_ENGINEERING.md).
 

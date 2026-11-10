@@ -29,8 +29,10 @@ def parser():
         s.add_argument("--followers",type=int,default=30,help="Maximum followers read from each profile")
         s.add_argument("--delay",type=float,default=0.7,help="Seconds between profile requests")
         s.add_argument("--retry-errors",action="store_true")
-    def tg(s):
+    def tg(s, *, mode=True):
         s.add_argument("--session",type=Path,default=Path("data/telegram"))
+        if mode:
+            s.add_argument("--telegram-mode",choices=("web","account"),default="web",help="web: anonymous public pages (default); account: optional local Telegram session")
     def scan(s):
         s.add_argument("--messages",type=int,default=100)
         s.add_argument("--max-channels",type=int,default=50)
@@ -43,9 +45,9 @@ def parser():
     c = command("crawl","Crawl anonymous public SoundCloud pages and follower requests")
     graph(c)
     c = command("telegram-login","Sign into Telegram locally (interactive)")
-    tg(c)
+    tg(c,mode=False)
     c = command("telegram-setup","Save local Telegram app credentials and sign in interactively")
-    tg(c)
+    tg(c,mode=False)
     c = command("scan-telegram","Find music assets in discovered public channels")
     tg(c); scan(c)
     c = command("download","Save queued free music assets; never run or extract them")
@@ -72,6 +74,11 @@ def parser():
 
 
 async def _telegram(args,login=False):
+    if not login and args.telegram_mode == "web":
+        from .telegram_web import PublicTelegramClient
+        client = PublicTelegramClient()
+        await client.connect()
+        return client
     from .telegram import TelegramClient
     args.session.parent.mkdir(parents=True,exist_ok=True)
     client = TelegramClient(session=str(args.session))
@@ -107,7 +114,7 @@ async def _run(args,state):
                         if args.download:
                             await _download(args,state,tgclient)
                     except (ValueError,RuntimeError) as exc:
-                        print(f"Telegram setup needed: {exc}",file=sys.stderr)
+                        print(f"Telegram scan failed: {exc}",file=sys.stderr)
                         print(json.dumps(export_report(state,args.report),indent=2))
                         return 2
                 print(json.dumps(export_report(state,args.report),indent=2))
@@ -141,7 +148,7 @@ async def _run(args,state):
         elif args.command == "doctor":
             from .telegram import credentials_path
             session = Path("data/telegram")
-            info = {"python":sys.version.split()[0],"soundcloud":"anonymous website mode (no API app/token)","telethon_installed":importlib.util.find_spec("telethon") is not None,
+            info = {"python":sys.version.split()[0],"soundcloud":"anonymous website mode (no API app/token)","telegram_default":"anonymous public web pages (no API app/login)","telethon_installed":importlib.util.find_spec("telethon") is not None,
               "telegram_api_id_set":bool(os.environ.get("TELEGRAM_API_ID")),"telegram_api_hash_set":bool(os.environ.get("TELEGRAM_API_HASH")),
               "telegram_local_credentials_saved":credentials_path(session).is_file(),
               "telegram_session_saved":session.with_suffix(".session").is_file()}

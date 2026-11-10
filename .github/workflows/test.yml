@@ -9,13 +9,17 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python: ['3.11', '3.14']
+        include:
+          - python: '3.11'
+            package: '.'
+          - python: '3.14'
+            package: '.[telegram]'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install -e '.[telegram]'
+      - run: python -m pip install -e '${{ matrix.package }}'
       - run: python -m unittest discover -s tests -v
       - run: packfinder demo --db data/demo.sqlite3 --out reports/demo
       - run: packfinder doctor
