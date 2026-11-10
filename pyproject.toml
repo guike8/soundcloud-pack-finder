@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "soundcloud-pack-finder"
+version = "0.1.0"
+description = "Follow a public SoundCloud graph to Telegram music freebies."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+telegram = ["Telethon>=1.45,<2"]
+
+[project.scripts]
+packfinder = "packfinder.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+packfinder = ["fixtures/*.json"]

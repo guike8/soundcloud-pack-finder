@@ -1,0 +1,19 @@
+{
+  "profiles": {
+    "demo-0": {"id":"demo-0","username":"Demo Seed (fictional)","permalink_url":"https://soundcloud.com/demo-seed","description":"Free drums: https://t.me/demo_free_drums"},
+    "demo-1": {"id":"demo-1","username":"Demo Producer (fictional)","permalink_url":"https://soundcloud.com/demo-producer","description":"Music producer","web_profiles":[{"url":"https://telegram.me/demo_presets"}]},
+    "demo-2": {"id":"demo-2","username":"Demo Follower of Follower (fictional)","permalink_url":"https://soundcloud.com/demo-second-hop","description":"Samples at t.me/demo_free_drums/42"}
+  },
+  "followers": {"demo-0":["demo-1"],"demo-1":["demo-0","demo-2"],"demo-2":[]},
+  "messages": {
+    "demo_free_drums": [
+      {"channel":"demo_free_drums","message_id":1,"date":"2026-01-01T00:00:00+00:00","text":"Free drum kit — CC0 sounds. Download: https://example.com/free-drums.zip","links":["https://example.com/free-drums.zip"],"attachment":null},
+      {"channel":"demo_free_drums","message_id":2,"date":"2026-01-02T00:00:00+00:00","text":"Premium sample pack, $25","links":[],"attachment":{"file_name":"premium-sample-pack.zip","size":100,"mime_type":"application/zip"}},
+      {"channel":"demo_free_drums","message_id":3,"date":"2026-01-03T00:00:00+00:00","text":"Cracked VST free download","links":["https://example.com/unwanted.zip"],"attachment":null}
+    ],
+    "demo_presets": [
+      {"channel":"demo_presets","message_id":10,"date":"2026-01-01T00:00:00+00:00","text":"Free Vital presets released by their creator. Includes license.txt.","links":[],"attachment":{"file_name":"free-vital-presets.zip","size":100,"mime_type":"application/zip"}},
+      {"channel":"demo_presets","message_id":11,"date":"2026-01-02T00:00:00+00:00","text":"Free VST on the developer’s website: https://example.com/synth","links":["https://example.com/synth"],"attachment":null}
+    ]
+  }
+}
