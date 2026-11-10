@@ -20,7 +20,7 @@ class State:
           scanned INTEGER NOT NULL DEFAULT 0, expanded INTEGER NOT NULL DEFAULT 0,error TEXT);
         CREATE TABLE IF NOT EXISTS edges (parent TEXT, child TEXT, PRIMARY KEY(parent,child));
         CREATE TABLE IF NOT EXISTS channels (
-          username TEXT PRIMARY KEY,url TEXT NOT NULL,scanned INTEGER DEFAULT 0,error TEXT);
+          username TEXT PRIMARY KEY,url TEXT NOT NULL,scanned INTEGER DEFAULT 0,error TEXT,skip_reason TEXT);
         CREATE TABLE IF NOT EXISTS channel_sources (
           username TEXT,profile_id TEXT,PRIMARY KEY(username,profile_id));
         CREATE TABLE IF NOT EXISTS messages (
@@ -30,6 +30,9 @@ class State:
           filename TEXT NOT NULL,text TEXT NOT NULL,eligible INTEGER NOT NULL,reason TEXT NOT NULL,
           status TEXT NOT NULL DEFAULT 'queued',path TEXT,sha256 TEXT,bytes INTEGER,error TEXT);
         """)
+        if "skip_reason" not in {r[1] for r in self.db.execute("PRAGMA table_info(channels)")}:
+            with self.db:
+                self.db.execute("ALTER TABLE channels ADD COLUMN skip_reason TEXT")
 
     def close(self):
         self.db.close()

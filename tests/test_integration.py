@@ -174,6 +174,19 @@ class PipelineIntegrationTests(unittest.TestCase):
         self.assertEqual(calls,["c"])
         self.assertEqual(self.state.stats()["errors"],1)
 
+    def test_personal_telegram_links_are_recorded_as_skips_not_crawl_errors(self):
+        from packfinder.telegram import TelegramUnsupportedChannelError
+        self.add_channel("personal_contact")
+        class PersonalLink:
+            async def scan_channel(self,channel,limit):
+                raise TelegramUnsupportedChannelError("This is a personal Telegram account")
+        self.scan(PersonalLink())
+        channel = self.state.rows("channels")[0]
+        self.assertEqual(channel["scanned"],1)
+        self.assertIn("personal",channel["skip_reason"])
+        self.assertIsNone(channel["error"])
+        self.assertEqual(self.state.stats()["errors"],0)
+
     def test_scan_handles_bad_links_and_refreshes_queue_with_current_caption(self):
         self.add_channel()
         first = message(1, "Premium sample pack", "samples.zip", ["https://[malformed/pack.zip"])

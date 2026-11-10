@@ -86,12 +86,15 @@ async def scan_channels(client, state: State, *, messages_per_channel=100, max_c
                             eligible,reason = False,"Music offer landing page; open it to obtain a direct download URL"
                         state.add_asset(kind="http",channel=channel,message_id=message["message_id"],filename=filename or "landing-page",text=caption,eligible=eligible,reason=reason,url=url)
             with state.db:
-                state.db.execute("UPDATE channels SET scanned=1,error=NULL WHERE username=?",(channel,))
+                state.db.execute("UPDATE channels SET scanned=1,error=NULL,skip_reason=NULL WHERE username=?",(channel,))
             log(f"Scanned @{channel}")
         except Exception as exc:
             with state.db:
-                state.db.execute("UPDATE channels SET error=? WHERE username=?",(str(exc),channel))
-            log(f"Could not read @{channel}: {exc}")
+                if getattr(exc,"skip_channel",False):
+                    state.db.execute("UPDATE channels SET scanned=1,error=NULL,skip_reason=? WHERE username=?",(str(exc),channel))
+                else:
+                    state.db.execute("UPDATE channels SET error=? WHERE username=?",(str(exc),channel))
+            log(f"Skipped @{channel}: {exc}" if getattr(exc,"skip_channel",False) else f"Could not read @{channel}: {exc}")
         if delay:
             await asyncio.sleep(delay)
     return state.stats()

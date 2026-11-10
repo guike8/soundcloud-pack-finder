@@ -35,6 +35,12 @@ class TelegramAccessError(TelegramError):
     """The requested public broadcast channel cannot be read."""
 
 
+class TelegramUnsupportedChannelError(TelegramAccessError):
+    """A discovered link names a personal account or another unsupported peer."""
+
+    skip_channel = True
+
+
 class TelegramDownloadError(TelegramError):
     """A file could not be downloaded within the requested constraints."""
 
@@ -370,7 +376,7 @@ class TelegramClient:
             if getattr(alias, "active", False)
         )
         if not getattr(entity, "broadcast", False) or not any(aliases):
-            raise TelegramAccessError(f"@{username} is not a public broadcast channel. Personal accounts, bots, groups and private invitations are skipped.")
+            raise TelegramUnsupportedChannelError(f"@{username} is not a public broadcast channel. Personal accounts, bots, groups and private invitations are skipped.")
         return username, entity
 
     async def scan_channel(self, channel: str, limit: int = 100) -> list[dict[str, Any]]:

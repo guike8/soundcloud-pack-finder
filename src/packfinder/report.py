@@ -39,7 +39,7 @@ def export_report(state: State, directory: Path) -> dict:
             writer.writeheader()
             writer.writerows({k:("'"+v if isinstance(v,str) and (v.lstrip()[:1] in {"=","+","-","@"} or v[:1] in {"\t","\r","\n"}) else v) for k,v in row.items()} for row in rows)
     cards = "".join(f'<div class="card"><b>{value}</b><span>{escape(key.replace("_"," "))}</span></div>' for key,value in data["stats"].items())
-    channel_rows = "".join(f'<tr><td>{_link(c["url"],"@"+c["username"])}</td><td>{"read" if c["scanned"] else "pending"}</td><td>{escape(c["error"] or "")}</td></tr>' for c in data["channels"])
+    channel_rows = "".join(f'<tr><td>{_link(c["url"],"@"+c["username"])}</td><td>{"skipped" if c.get("skip_reason") else "read" if c["scanned"] else "pending"}</td><td>{escape(c.get("skip_reason") or c["error"] or "")}</td></tr>' for c in data["channels"])
     asset_rows = "".join(f'<tr><td>{escape(a["filename"])}</td><td>{_link(_asset_source(a),"source")}</td><td>{escape(a["status"])}</td><td>{escape(a["reason"])}</td><td>{escape(a["error"] or "")}</td></tr>' for a in data["assets"])
     profile_rows = "".join(f'<tr><td>{_link(p["data"].get("permalink_url"),p["data"].get("username",p["id"]))}</td><td>{p["depth"]}</td><td>{escape(p["error"] or "")}</td></tr>' for p in data["profiles"])
     html = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'"><title>SoundCloud Pack Finder — results</title>
