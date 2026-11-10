@@ -44,6 +44,8 @@ def parser():
     graph(c)
     c = command("telegram-login","Sign into Telegram locally (interactive)")
     tg(c)
+    c = command("telegram-setup","Save local Telegram app credentials and sign in interactively")
+    tg(c)
     c = command("scan-telegram","Find music assets in discovered public channels")
     tg(c); scan(c)
     c = command("download","Save queued free music assets; never run or extract them")
@@ -112,6 +114,9 @@ async def _run(args,state):
         elif args.command == "telegram-login":
             tgclient = await _telegram(args,login=True)
             print("Telegram session saved locally. You can now use scan-telegram or run.")
+        elif args.command == "telegram-setup":
+            from .telegram import interactive_setup
+            await interactive_setup(args.session)
         elif args.command == "scan-telegram":
             tgclient = await _telegram(args)
             await scan_channels(tgclient,state,messages_per_channel=args.messages,max_channels=args.max_channels,refresh=args.refresh_channels)
@@ -134,8 +139,12 @@ async def _run(args,state):
                 raise ValueError("Unknown asset or already downloaded")
             print("Free offer recorded. Use download to save this asset.")
         elif args.command == "doctor":
+            from .telegram import credentials_path
+            session = Path("data/telegram")
             info = {"python":sys.version.split()[0],"soundcloud":"anonymous website mode (no API app/token)","telethon_installed":importlib.util.find_spec("telethon") is not None,
-              "telegram_api_id_set":bool(os.environ.get("TELEGRAM_API_ID")),"telegram_api_hash_set":bool(os.environ.get("TELEGRAM_API_HASH"))}
+              "telegram_api_id_set":bool(os.environ.get("TELEGRAM_API_ID")),"telegram_api_hash_set":bool(os.environ.get("TELEGRAM_API_HASH")),
+              "telegram_local_credentials_saved":credentials_path(session).is_file(),
+              "telegram_session_saved":session.with_suffix(".session").is_file()}
             if args.live:
                 from .soundcloud import SoundCloudClient
                 client = SoundCloudClient()

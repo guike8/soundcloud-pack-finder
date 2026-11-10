@@ -7,10 +7,16 @@ Neither scanning nor downloading joins channels or sends messages.
 
 from __future__ import annotations
 
+import contextlib
+import getpass
 import inspect
+import json
 import os
 from pathlib import Path
 import re
+import secrets
+import stat
+import sys
 import tempfile
 from typing import Any
 from urllib.parse import urlsplit
@@ -31,6 +37,118 @@ class TelegramAccessError(TelegramError):
 
 class TelegramDownloadError(TelegramError):
     """A file could not be downloaded within the requested constraints."""
+
+
+def credentials_path(session: str | Path) -> Path:
+    """Locate this session's local API configuration, without exposing values."""
+    path = Path(session).expanduser()
+    if path.suffix == ".session":
+        path = path.with_suffix("")
+    return Path(str(path) + ".credentials.json")
+
+
+def _validated_credentials(api_id: Any, api_hash: Any) -> tuple[int, str]:
+    try:
+        numeric_id = int(api_id) if not isinstance(api_id, bool) else 0
+    except (TypeError, ValueError, OverflowError):
+        numeric_id = 0
+    if not isinstance(api_hash, str):
+        api_hash = ""
+    api_hash = api_hash.strip()
+    if numeric_id <= 0 or not re.fullmatch(r"[0-9a-fA-F]{32}", api_hash):
+        raise TelegramSetupError("Telegram API credentials are missing or invalid. Use the numeric API ID and API hash from https://my.telegram.org/apps.") from None
+    return numeric_id, api_hash
+
+
+def _no_symlinks(path: Path) -> Path:
+    path = Path(os.path.abspath(path.expanduser()))
+    if any(component.is_symlink() for component in (path, *path.parents)):
+        raise TelegramSetupError("Telegram credentials and sessions require a local path without symbolic links.")
+    return path
+
+
+def load_local_credentials(session: str | Path) -> tuple[int, str] | None:
+    """Load a regular private JSON configuration, or return None when absent."""
+    path = _no_symlinks(credentials_path(session))
+    directory_fd = None
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(path.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), dir_fd=directory_fd)
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise TelegramSetupError("The local Telegram credentials path must be a regular file.")
+            if stat.S_IMODE(metadata.st_mode) & 0o077:
+                raise TelegramSetupError("The local Telegram credentials file must be private; use file permissions 0600.")
+            raw = stream.read(4097)
+        if len(raw) > 4096:
+            raise TelegramSetupError("The local Telegram credentials file is invalid.")
+        values = json.loads(raw)
+        if not isinstance(values, dict):
+            raise TelegramSetupError("The local Telegram credentials file is invalid.")
+        return _validated_credentials(values.get("api_id"), values.get("api_hash"))
+    except FileNotFoundError:
+        return None
+    except TelegramSetupError:
+        raise
+    except (OSError, ValueError, TypeError, UnicodeError):
+        raise TelegramSetupError("Could not read the local Telegram API credentials file.") from None
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def save_local_credentials(session: str | Path, api_id: Any, api_hash: Any) -> Path:
+    """Atomically save only API credentials as a regular owner-only JSON file."""
+    numeric_id, api_hash = _validated_credentials(api_id, api_hash)
+    path = _no_symlinks(credentials_path(session))
+    directory_fd = None
+    temporary_name = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _no_symlinks(path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            previous = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            previous = None
+        if previous is not None and not stat.S_ISREG(previous.st_mode):
+            raise TelegramSetupError("The local Telegram credentials path must be a regular file.")
+        temporary_name = ".telegram-credentials-" + secrets.token_hex(12) + ".tmp"
+        descriptor = os.open(temporary_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=directory_fd)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump({"api_id": numeric_id, "api_hash": api_hash}, stream)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        temporary_name = None
+        os.fsync(directory_fd)
+        return path
+    except TelegramSetupError:
+        raise
+    except OSError:
+        raise TelegramSetupError("Could not securely save the local Telegram API credentials file.") from None
+    finally:
+        if directory_fd is not None:
+            if temporary_name is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(temporary_name, dir_fd=directory_fd)
+            os.close(directory_fd)
+
+
+def _credential_sources(session: str | Path, api_id: Any = None, api_hash: Any = None) -> tuple[Any, Any]:
+    raw_id = api_id if api_id is not None else os.environ.get("TELEGRAM_API_ID")
+    raw_hash = api_hash if api_hash is not None else os.environ.get("TELEGRAM_API_HASH")
+    if raw_id is None or raw_hash is None:
+        local = load_local_credentials(session)
+        if local is not None:
+            if raw_id is None:
+                raw_id = local[0]
+            if raw_hash is None:
+                raw_hash = local[1]
+    return raw_id, raw_hash
 
 
 _USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}\Z")
@@ -153,18 +271,13 @@ class TelegramClient:
         if client is not None:
             self._client = client
             return
-        raw_id = api_id if api_id is not None else os.environ.get("TELEGRAM_API_ID")
-        api_hash = api_hash if api_hash is not None else os.environ.get("TELEGRAM_API_HASH")
-        try:
-            numeric_id = int(raw_id) if raw_id is not None else 0
-        except (TypeError, ValueError) as exc:
-            raise TelegramSetupError("TELEGRAM_API_ID must be the numeric API ID from my.telegram.org.") from exc
-        if numeric_id <= 0 or not api_hash or not re.fullmatch(r"[0-9a-fA-F]{32}", api_hash):
-            raise TelegramSetupError("Set TELEGRAM_API_ID and TELEGRAM_API_HASH from https://my.telegram.org/apps.")
+        raw_id, raw_hash = _credential_sources(session, api_id, api_hash)
+        numeric_id, api_hash = _validated_credentials(raw_id, raw_hash)
         try:
             from telethon import TelegramClient as TelethonClient
         except ImportError as exc:
             raise TelegramSetupError("Telegram support is optional. Install it with: pip install '.[telegram]'") from exc
+        self.session_path = _no_symlinks(self.session_path)
         self.session_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._client = TelethonClient(
             str(self.session_path), numeric_id, api_hash,
@@ -175,6 +288,8 @@ class TelegramClient:
     def _protect_session(self) -> None:
         for suffix in ("", "-journal", "-wal", "-shm"):
             path = Path(str(self.session_path) + suffix)
+            if path.is_symlink():
+                raise TelegramSetupError("Telegram session files must not be symbolic links.")
             if path.is_file():
                 path.chmod(0o600)
 
@@ -183,10 +298,20 @@ class TelegramClient:
         if me is None or getattr(me, "bot", False):
             raise TelegramSetupError("Channel history requires your own Telegram user session, not a bot token.")
 
-    async def login(self) -> None:
+    async def login(self, *, hide_input: bool = False) -> None:
         """Start Telethon's interactive phone/code/2FA login when run by the user."""
         try:
-            await self._client.start()
+            if hide_input:
+                # These callbacks execute only in the user's terminal. Codes
+                # and passwords are never persisted or passed on a command line.
+                with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
+                    await self._client.start(
+                        phone=lambda: getpass.getpass("Telegram phone number, including country code (hidden): ").strip(),
+                        code_callback=lambda: getpass.getpass("Telegram login code (hidden): ").strip(),
+                        password=lambda: getpass.getpass("Telegram 2FA password, if enabled (hidden): "),
+                    )
+            else:
+                await self._client.start()
             await self._verify_user()
             self._connected = True
             self._protect_session()
@@ -348,3 +473,23 @@ class TelegramClient:
                             await result
             finally:
                 part.unlink(missing_ok=True)
+
+
+async def interactive_setup(session: Path) -> None:
+    """Configure and authorize Telegram through an interactive local terminal."""
+    if not sys.stdin.isatty():
+        raise TelegramSetupError("Telegram setup requires an interactive local terminal. Run the setup command yourself; do not paste credentials into chat.")
+    print("Telegram API credentials: https://my.telegram.org/apps")
+    raw_id, raw_hash = _credential_sources(session)
+    if raw_id is None:
+        raw_id = input("Telegram API ID: ").strip()
+    if raw_hash is None:
+        raw_hash = getpass.getpass("Telegram API hash (hidden): ").strip()
+    numeric_id, api_hash = _validated_credentials(raw_id, raw_hash)
+    save_local_credentials(session, numeric_id, api_hash)
+    client = TelegramClient(api_id=numeric_id, api_hash=api_hash, session=session)
+    try:
+        await client.login(hide_input=True)
+    finally:
+        await client.close()
+    print("Telegram connected. API credentials and session are saved locally.")

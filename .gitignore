@@ -13,5 +13,6 @@ reports/
 *.sqlite*
 *.db
 *.session*
+*.credentials.json
 *.part
 .DS_Store

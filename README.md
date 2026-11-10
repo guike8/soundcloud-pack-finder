@@ -32,7 +32,15 @@ Progress, graph edges, sources, channel status, and file hashes live in `data/cr
 
 ## Connect Telegram once
 
-Obtain your own `api_id` and `api_hash` from [Telegram API development tools](https://my.telegram.org/apps). Keep them in your local environment; do not commit them or paste them into a public issue.
+Obtain your own `api_id` and `api_hash` from [Telegram API development tools](https://my.telegram.org/apps). Then use the local interactive setup:
+
+```sh
+packfinder telegram-setup
+```
+
+On macOS, double-click `connect-telegram.command` in Finder. It prompts locally for the app credentials, phone number, login code, and two-step password if enabled. Secret inputs are hidden. App credentials are saved in `data/telegram.credentials.json` with owner-only permissions, and future commands load them automatically. Login codes and passwords are never saved. Keep the local credentials and session out of public issues and chat messages.
+
+Environment variables are also supported if you prefer managing credentials yourself:
 
 ```sh
 export TELEGRAM_API_ID='your_numeric_id'

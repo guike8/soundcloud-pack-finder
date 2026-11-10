@@ -1,15 +1,24 @@
 import datetime
+import contextlib
+import io
+import json
+import os
 from pathlib import Path
 from types import SimpleNamespace as Obj
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, Mock, patch
 
 from packfinder.telegram import (
     TelegramAccessError,
     TelegramClient,
     TelegramDownloadError,
     TelegramSetupError,
+    credentials_path,
+    interactive_setup,
+    load_local_credentials,
     normalize_public_channel,
+    save_local_credentials,
 )
 
 
@@ -74,7 +83,138 @@ class ChannelParsingTests(unittest.TestCase):
                 normalize_public_channel(value)
 
 
+class LocalCredentialTests(unittest.TestCase):
+    def test_session_suffix_has_same_credentials_path(self):
+        self.assertEqual(credentials_path(Path("data/telegram")), Path("data/telegram.credentials.json"))
+        self.assertEqual(credentials_path(Path("data/telegram.session")), Path("data/telegram.credentials.json"))
+
+    def test_save_load_private_file_and_atomic_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory).resolve() / "private" / "telegram"
+            self.assertIsNone(load_local_credentials(session))
+            path = save_local_credentials(session, "12345", "a" * 32)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(load_local_credentials(session), (12345, "a" * 32))
+            save_local_credentials(session, 67890, "b" * 32)
+            self.assertEqual(load_local_credentials(session), (67890, "b" * 32))
+            self.assertEqual([p.name for p in path.parent.iterdir()], ["telegram.credentials.json"])
+
+    def test_refuses_credential_file_symlinks_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            target = root / "another-file"
+            target.write_text("unchanged")
+            session = root / "telegram"
+            credentials_path(session).symlink_to(target)
+            for operation in (lambda: load_local_credentials(session), lambda: save_local_credentials(session, 12345, "a" * 32)):
+                with self.assertRaises(TelegramSetupError):
+                    operation()
+            self.assertEqual(target.read_text(), "unchanged")
+
+    def test_refuses_symlinked_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            real = root / "real"
+            real.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            for operation in (lambda: load_local_credentials(alias / "telegram"), lambda: save_local_credentials(alias / "telegram", 12345, "a" * 32)):
+                with self.assertRaises(TelegramSetupError):
+                    operation()
+            self.assertEqual(list(real.iterdir()), [])
+
+    def test_refuses_readable_by_others(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory).resolve() / "telegram"
+            path = save_local_credentials(session, 12345, "a" * 32)
+            path.chmod(0o644)
+            with self.assertRaises(TelegramSetupError):
+                load_local_credentials(session)
+
+    def test_invalid_values_are_not_disclosed_in_errors(self):
+        marker = "do-not-disclose-this-test-value"
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory).resolve() / "telegram"
+            with self.assertRaises(TelegramSetupError) as caught:
+                save_local_credentials(session, marker, marker)
+            self.assertNotIn(marker, str(caught.exception))
+            path = credentials_path(session)
+            path.write_text(json.dumps({"api_id": marker, "api_hash": marker}))
+            path.chmod(0o600)
+            with self.assertRaises(TelegramSetupError) as caught:
+                load_local_credentials(session)
+            self.assertNotIn(marker, str(caught.exception))
+
+    def test_constructor_precedence_explicit_then_environment_then_local(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory).resolve() / "telegram"
+            save_local_credentials(session, 100, "a" * 32)
+            factory = Mock(return_value=FakeClient())
+            with patch.dict("sys.modules", {"telethon": Obj(TelegramClient=factory)}), patch.dict(os.environ, {"TELEGRAM_API_ID": "200", "TELEGRAM_API_HASH": "b" * 32}, clear=True):
+                TelegramClient(300, "c" * 32, session)
+                self.assertEqual(factory.call_args.args[1:], (300, "c" * 32))
+                TelegramClient(session=session)
+                self.assertEqual(factory.call_args.args[1:], (200, "b" * 32))
+            with patch.dict("sys.modules", {"telethon": Obj(TelegramClient=factory)}), patch.dict(os.environ, {}, clear=True):
+                TelegramClient(session=session)
+                self.assertEqual(factory.call_args.args[1:], (100, "a" * 32))
+
+    def test_partial_environment_uses_missing_local_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory).resolve() / "telegram"
+            save_local_credentials(session, 100, "a" * 32)
+            factory = Mock(return_value=FakeClient())
+            with patch.dict("sys.modules", {"telethon": Obj(TelegramClient=factory)}), patch.dict(os.environ, {"TELEGRAM_API_ID": "200"}, clear=True):
+                TelegramClient(session=session)
+            self.assertEqual(factory.call_args.args[1:], (200, "a" * 32))
+
+
 class TelegramAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hidden_login_uses_callbacks_without_disclosing_their_values(self):
+        fake = FakeClient()
+        supplied = ["+15550001111", "54321", "test-two-factor-password"]
+        observed = []
+        async def start(**callbacks):
+            observed.extend(callbacks[key]() for key in ("phone", "code_callback", "password"))
+            print("Signed in successfully as Test Account")
+        fake.start = start
+        output = io.StringIO()
+        with patch("packfinder.telegram.getpass.getpass", side_effect=supplied), contextlib.redirect_stdout(output):
+            await TelegramClient(client=fake).login(hide_input=True)
+        self.assertEqual(observed, supplied)
+        self.assertEqual(output.getvalue(), "")
+
+    async def test_interactive_setup_refuses_non_tty_before_prompting(self):
+        with patch("packfinder.telegram.sys.stdin.isatty", return_value=False), patch("builtins.input") as prompt, patch("packfinder.telegram.getpass.getpass") as hidden:
+            with self.assertRaises(TelegramSetupError):
+                await interactive_setup(Path("data/test-session"))
+            prompt.assert_not_called()
+            hidden.assert_not_called()
+
+    async def test_interactive_setup_saves_only_api_credentials_and_hides_auth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory).resolve() / "telegram"
+            client = Obj(login=AsyncMock(), close=AsyncMock())
+            output = io.StringIO()
+            with patch("packfinder.telegram.sys.stdin.isatty", return_value=True), patch.dict(os.environ, {}, clear=True), patch("builtins.input", return_value="12345"), patch("packfinder.telegram.getpass.getpass", return_value="a" * 32), patch("packfinder.telegram.TelegramClient", return_value=client), contextlib.redirect_stdout(output):
+                await interactive_setup(session)
+            client.login.assert_awaited_once_with(hide_input=True)
+            client.close.assert_awaited_once()
+            self.assertEqual(load_local_credentials(session), (12345, "a" * 32))
+            self.assertEqual(set(json.loads(credentials_path(session).read_text())), {"api_id", "api_hash"})
+            self.assertNotIn("a" * 32, output.getvalue())
+            self.assertIn("Telegram connected", output.getvalue())
+
+    async def test_interactive_setup_reuses_configured_values_without_prompts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory).resolve() / "telegram"
+            save_local_credentials(session, 12345, "a" * 32)
+            client = Obj(login=AsyncMock(), close=AsyncMock())
+            with patch("packfinder.telegram.sys.stdin.isatty", return_value=True), patch.dict(os.environ, {}, clear=True), patch("builtins.input") as prompt, patch("packfinder.telegram.getpass.getpass") as hidden, patch("packfinder.telegram.TelegramClient", return_value=client), contextlib.redirect_stdout(io.StringIO()):
+                await interactive_setup(session)
+            prompt.assert_not_called()
+            hidden.assert_not_called()
+
     async def test_scan_preserves_attachment_and_hidden_links(self):
         fake = FakeClient()
         records = await TelegramClient(client=fake).scan_channel("musicpacks", limit=7)
