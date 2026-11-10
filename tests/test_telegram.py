@@ -170,6 +170,19 @@ class LocalCredentialTests(unittest.TestCase):
 
 
 class TelegramAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_session_is_private_before_any_network_connection(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory).resolve() / "login.session"
+            fake = FakeClient()
+            def construct(path,*args,**kwargs):
+                Path(path).write_bytes(b"empty unauthenticated fixture")
+                Path(path).chmod(0o644)
+                return fake
+            with patch.dict("sys.modules",{"telethon":Obj(TelegramClient=construct)}):
+                TelegramClient(api_id=123,api_hash="a"*32,session=session)
+            self.assertEqual(session.stat().st_mode & 0o777,0o600)
+
     async def test_hidden_login_uses_callbacks_without_disclosing_their_values(self):
         fake = FakeClient()
         supplied = ["+15550001111", "54321", "test-two-factor-password"]

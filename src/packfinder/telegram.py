@@ -290,6 +290,9 @@ class TelegramClient:
             request_retries=2, connection_retries=2,
             flood_sleep_threshold=30, receive_updates=False,
         )
+        # Telethon creates the SQLite session in its constructor. Restrict it
+        # before connect/login can write an authorization key into the file.
+        self._protect_session()
 
     def _protect_session(self) -> None:
         for suffix in ("", "-journal", "-wal", "-shm"):
